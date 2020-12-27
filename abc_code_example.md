@@ -30,9 +30,10 @@ round2 = function(x, n) {
 }
 ```
 
-3.  Loading training and testing example data form github Alternatively,
-    the use can select other data and name traiing set - “training” ,
-    and testing set - “testing” without changing the code below.
+3.  Loading training and testing example data form github.
+    Alternatively, the user can select other data and name traing set -
+    “training” , and testing set - “testing” without changing the code
+    below.
 
 <!-- end list -->
 
