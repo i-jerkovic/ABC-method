@@ -1,0 +1,471 @@
+---
+title: "Adjusted binary classification (ABC) model in forensic science: an example on sex classification from handprint dimensions"
+date: "13/12/2020"
+output: github_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+1. Reading packages  
+
+
+```{r message=FALSE, warning=FALSE}
+library(readxl)
+library(dplyr)
+library(caret)
+library(expss)
+library(tidyverse)
+```
+
+
+2. Loading new "round" function
+
+```{r warning=FALSE}
+round2 = function(x, n) {
+  posneg = sign(x)
+  z = abs(x)*10^n
+  z = z + 0.5
+  z = trunc(z)
+  z = z/10^n
+  z*posneg
+}
+```
+
+
+3. Loading training and testing example data form github Alternatively, the use can select other data and name traiing set - "training" , and testing set - "testing" without changing the code below.
+
+
+```{r}
+
+load(url("https://github.com/i-jerkovic/ABC-method/blob/master/Rdata/training.RData?raw=true"))
+
+load(url("https://github.com/i-jerkovic/ABC-method/blob/master/Rdata/testing.RData?raw=true"))
+
+```
+
+
+
+4. Setting seed for cross-validation function.
+
+```{r}
+RNGkind(sample.kind = "Rejection")
+set.seed(12345)
+```
+
+5. Defining validation method and performance parameters.
+
+In this case, we used leave group out or Monte Carlo cross-validation algorithm (method="LGOCV").\
+We used 70% of the data for the calibration set (p = 0.7), while 30% were used for validation. \
+This procedure was iterated 50 times (n = 50) for each model.
+
+```{r}
+train_control <- trainControl(method="LGOCV", p = 0.7, n = 50, classProbs = TRUE, savePredictions = "final", summaryFunction = twoClassSummary)
+```
+
+
+6. In this example, we selected the variable "HB" from the training sample.\
+Linear discriminant analysis (method="lda") was selected as a classification method.\
+However, other classification methods can also be easily employed. \
+See ? train_model_list
+
+```{r}
+model <- train(sex ~  HB,  data=training, trControl=train_control, method="lda", metric = "ROC")
+```
+
+This data shows the results of cross-validation.\
+The variable pred indicates sex predicted by classification model.\
+The variable obs indicates observed data, i.e., initial data on sex.\
+X1 shows the posterior probability of an individual being male.\
+X2 shows the posterior probability of an individual being female.\
+Here we show only first 6 rows from 1600.
+
+```{r}
+head(model$pred)
+```
+
+
+7. Classification performance metrics of the model without adjustment was performed by comparing the predicted and observed data on sex.\
+Note: Classification performance metrics were calculated as the average of all iterations (n = 1600).
+
+```{r}
+cvmatrix <- confusionMatrix(model$pred$pred, model$pred$obs)
+cvmatrix
+
+```
+
+8. From the same model, we extracted posterior probabilities separately for males and females.\
+For male individuals, we extracted posterior probabilities of being male. -> mprob \
+For female individuals, we extracted posterior probabilities of being female. -> fprob \
+To manipulate data more easily, we rounded posterior probabilities to three decimals.
+
+
+```{r}
+mprob <- round2(model$pred$X1, 3)
+fprob <- round2(model$pred$X2, 3)
+```
+
+```{r}
+head(mprob)
+```
+
+```{r}
+head(fprob)
+```
+
+9. We constructed a new data frame that includes observed sex, male and female posterior probabilities.
+
+```{r}
+predictions <- data.frame(sex = model$pred$obs, mprob, fprob)
+```
+
+```{r}
+head(predictions)
+```
+
+We extracted information of sex predicted by the model.
+
+```{r}
+predsex <- model$pred$pred
+
+head(predsex)
+
+```
+
+Finally, we added that information in 'predictions'.
+
+```{r}
+predictions <- mutate(predictions, predsex)
+
+head(predictions)
+```
+
+We compared observed and predicted data on sex and constructed a new variable that indicates if sex was accurately classified. This variable was added to the 'predictions' data.
+
+
+```{r}
+corrClass <- predictions$sex == predictions$predsex
+
+predictions <- mutate(predictions, corrClass)
+
+head(predictions)
+```
+
+10. The table 'predictions' is divided on males and females.
+
+```{r}
+predictions_m <- predictions %>% filter(predsex == "X1")
+predictions_f <- predictions %>% filter(predsex == "X2")
+```
+
+ABC adjustment - for males
+
+11. We created two empty vectors:
+
+acc_m - which will contain data on accuracies when different posterior probabilities are used.\
+pp_m - which will contain data on posterior probabilities
+
+```{r}
+acc_m <- vector()
+pp_m <- vector ()
+```
+
+12. We created a loop that examines the accuracy of the model when we classify only specimens with posterior probabilities higher then chosen threshold.
+In this case, we examined thresholds from 0.5 to 1 with increment of 0.001.
+
+```{r}
+for(i in 500:1000) {
+  j <- i/1000
+  acc_m[i] <- with(predictions_m, mean_if(ge(j), mprob, data = corrClass))*100
+  pp_m[i] <- j
+}
+```
+
+Results are provided in the following plot.
+
+
+```{r warning=FALSE}
+acc_pp_m <- data.frame(accuracy = acc_m, probability = pp_m)
+
+acc_pp_m %>% ggplot(aes(probability, accuracy)) + geom_line() + geom_hline(yintercept = 95, color='red')
+```
+
+
+13. From the previous plot, we can see that at the certain value of posterior probability, accuracy reaches 95% and does not fall below this value.\
+So, in the next step, we calculated the minimum value of posterior probability that provides the accuracy of at least 95%.\
+
+For this reason, we extract all posterior probabilities that provide accuracies lower than 95%.
+
+```{r}
+lessm <- filter(acc_pp_m, accuracy < 95)
+head(lessm)
+tail(lessm)
+```
+
+14. In the next step, we look for a maximum value of probability that provides accuracy lower than 95%.
+
+```{r}
+maxppm <- ifelse(nrow(lessm)==0, 0.500, max(lessm$probability))
+```
+
+Therefore, the probability threshold for males is:
+
+```{r}
+maxppm
+```
+
+```{r warning=FALSE}
+acc_pp_m %>% ggplot(aes(probability, accuracy)) + geom_line() + geom_hline(yintercept = 95, color='red') + geom_vline(xintercept = maxppm, color ='blue')
+```
+
+
+15. Now, we compute the proportion of specimens with probability greater than the threshold. First, we create an empty vector:\
+
+avlbm - contains the number of specimens that can be classified if a certain probability threshold is applied.\
+
+
+
+```{r}
+avlbm <- vector()
+```
+
+16. We created the same loop that will calculate a number of classified individuals for probability thresholds from 0.5 to 1 with an increment of 0.001.
+
+```{r}
+for(i in 500:1000) {
+  j <- i/1000
+  avlbm[i] <- with(predictions_m, count_if(ge(j), mprob, data = predsex))
+}
+```
+
+The number of classified specimens is furtherly converted to the proportion.
+
+```{r}
+avlbm <- avlbm / length(predictions_m$sex) * 100
+```
+
+The results are provided in the following plot.
+
+```{r warning=FALSE}
+
+avlb_pp_m <- data.frame(availability = avlbm, probability = pp_m)
+
+avlb_pp_m %>% ggplot(aes(probability, availability)) + geom_line() + geom_vline(xintercept = maxppm, color='red')
+```
+
+17. We calculate the proportion of classified specimens for a threshold that provides 95% accuracy.
+
+
+```{r}
+maxm_perc <- avlb_pp_m[which(avlb_pp_m$probability == maxppm),1]
+maxm_perc
+```
+The influence of raising probability to the proportion of classified specimens is shown in the following plot.
+
+```{r warning=FALSE}
+avlb_pp_m %>% ggplot(aes(probability, availability)) + geom_line() + geom_vline(xintercept = maxppm, color='red')+ geom_hline(yintercept = maxm_perc, color='blue')
+```
+
+18. Now, we repeat the same procedure for females.\
+We create empty vectors:\
+acc_f - which will contain data on accuracies when different posterior probabilities are used\
+pp_f - which will contain data on posterior probabilities\
+
+```{r}
+acc_f <- vector()
+pp_f <- vector ()
+
+```
+
+19.  We again create a loop that examines the accuracy of the model when we classify only specimens with a posterior probability higher then chosen threshold.
+In this case, we examined thresholds from 0.5 to 1 with an increment of 0.001.
+
+```{r}
+acc_f <- vector()
+pp_f <- vector ()
+
+for(i in 500:1000) {
+  j <- i/1000
+  acc_f[i] <- with(predictions_f, mean_if(ge(j), fprob, data = corrClass))*100
+  pp_f[i] <- j
+}
+
+```
+
+The results are provided in the following plot.
+
+```{r warning=FALSE}
+acc_pp_f <- data.frame(accuracy = acc_f, probability = pp_f)
+acc_pp_f %>% ggplot(aes(probability, accuracy)) + geom_line() + geom_hline(yintercept = 95, color='red')
+```
+
+20. From the previous plot, we can see that at certain value of posterior probability, accuracy reaches 95% and does not fall below this value.\
+So, in the next step, we calculated the minimum value of posterior probability that provides the accuracy of at least 95%.\
+
+For this reason, we extract all posterior probabilities that provide accuracies lower than 95%.
+
+```{r}
+lessf <- filter(acc_pp_f, accuracy < 95)
+head(lessf)
+tail(lessf)
+
+```
+
+21. In the next step, we look for a maximum probability value that provides accuracy lower than 95%.
+
+```{r}
+maxppf <- ifelse(nrow(lessf)==0, 0.500, max(lessf$probability))
+```
+
+Therefore, the probability threshold for the females is:
+
+```{r}
+maxppf
+```
+
+```{r warning=FALSE}
+acc_pp_f %>% ggplot(aes(probability, accuracy)) + geom_line() + geom_hline(yintercept = 95, color='red') + geom_vline(xintercept = maxppf, color ='blue')
+```
+
+22. Now, we compute the proportion of specimens with probability greater than the threshold. First, we create an empty vector:\
+
+avlbf contains the number of specimens that can be classified if a certain probability threshold is applied.\
+
+
+```{r}
+avlbf <- vector()
+```
+
+23. We created the same loop that will calculate the number of classified individuals for probability thresholds from 0.5 to 1 with an increment of 0.001.
+
+```{r}
+for(i in 500:1000) {
+  j <- i/1000
+  avlbf[i] <- with(predictions_f, count_if(ge(j), fprob, data = predsex))
+}
+```
+
+The number of classified specimens is furtherly converted to the proportion.
+
+```{r}
+avlbf <- avlbf / length(predictions_f$sex) * 100
+```
+
+The results are provided in the following plot.
+
+```{r warning=FALSE}
+
+avlb_pp_f <- data.frame(availability = avlbf, probability = pp_f)
+
+avlb_pp_f %>% ggplot(aes(probability, availability)) + geom_line() + geom_vline(xintercept = maxppf, color='red')
+```
+
+23. We calculate the proportion of classified specimens for a threshold that provides 95% accuracy.
+
+
+```{r}
+maxf_perc <- avlb_pp_f[which(avlb_pp_f$probability == maxppf),1]
+maxf_perc
+```
+
+
+```{r warning=FALSE}
+avlb_pp_f %>% ggplot(aes(probability, availability)) + geom_line() + geom_vline(xintercept = maxppf, color='red')+ geom_hline(yintercept = maxf_perc, color='blue')
+```
+
+
+24. Now, we can test cross-validated model performance using calculated thresholds for males and females.
+So, we will estimate sex only for those specimens that meet the posterior probability criteria.
+
+```{r}
+CVtestdata <- predictions %>% filter(mprob > maxppm | fprob > maxppf)
+
+```
+
+
+25.  Classification performance metrics of the model with ABC adjustment was performed by comparing the predicted and observed data on sex.\
+Note: Classification performance metrics were calculated as the average of all iterations (n = 1600).
+
+
+```{r}
+cvABCmatrix <- confusionMatrix(CVtestdata$predsex, CVtestdata$sex)
+cvABCmatrix
+```
+
+
+26. The model's performance is furtherly checked on the test data set.
+
+First, we predict data using the unadjusted model and new data set - testing.
+
+```{r}
+predicted <- predict(model, newdata = testing, type = "prob")
+head(predicted)
+```
+
+27. Then, we add those predictions to the test set which contains observed sex data.\
+Posterior probabilities are rounded to 3 decimals.
+
+```{r}
+testing <- mutate(testing, predm = predicted$X1, predf = predicted$X2)
+testing$predm <- round2(testing$predm, 3)
+testing$predf <- round2(testing$predf, 3)
+```
+
+28. If the estimated probability is larger for males, the specimen is classified as male (X1). Otherwise, the specimen is classified as female.
+
+`
+```{r}
+testing <- mutate(testing, ac = ifelse(predm>predf, "X1", "X2"))
+```
+
+```{r}
+testmatrix <- confusionMatrix(as.factor(testing$ac), testing$sex)
+testmatrix
+
+```
+
+
+29. Now, we consider only specimens that have posterior probabilities larger than previously calculated thresholds.
+
+```{r}
+testing2<- testing %>% filter(predm > maxppm | predf > maxppf)
+testing2$ac <- factor(testing2$ac)
+```
+
+30. Lastly, the confusion matrix is created for testing sample.
+
+```{r}
+testmatrixABC <- confusionMatrix(testing2$ac, testing2$sex)
+testmatrixABC
+```
+
+31. In the testing sample, we also calculate the proportion of classified individuals.
+
+```{r}
+test_males_proportion <- (testmatrixABC$table[1]+testmatrixABC$table[2])/sum(testing$sex=="X1")*100
+test_males_proportion
+
+test_females_proportion <- (testmatrixABC$table[3]+testmatrixABC$table[4])/sum(testing$sex=="X2")*100
+test_females_proportion
+
+```
+
+32. Summary of the unadjusted and adjusted model.
+
+
+```{r}
+summaryCV <- c(cvmatrix$overall[1], cvmatrix$byClass[1], cvmatrix$byClass[2], cvmatrix$byClass[3], cvmatrix$byClass[4], classified_m = 100, classified_f = 100, cut_off_m = 0.5, cut_off_f = 0.5)
+               
+summaryCVABC <- c(cvABCmatrix$overall[1], cvABCmatrix$byClass[1], cvABCmatrix$byClass[2], cvABCmatrix$byClass[3], cvABCmatrix$byClass[4], classified_m = maxm_perc, classified_f=maxf_perc, cut_off_m = maxppm, cut_off_f = maxppf)
+
+summaryTEST <-  c(testmatrix$overall[1], testmatrix$byClass[1], testmatrix$byClass[2], testmatrix$byClass[3], testmatrix$byClass[4], classified_m = 100, classified_f=100, cut_off_m = 0.5, cut_off_f = 0.5)
+
+summaryTESTABC <- c(testmatrixABC$overall[1], testmatrixABC$byClass[1], testmatrixABC$byClass[2], testmatrixABC$byClass[3], testmatrixABC$byClass[4], classified_m = test_males_proportion, classified_f=test_females_proportion, cut_off_m = maxppm, cut_off_f = maxppf)
+
+round2(cbind(LGOCV = summaryCV, LGOCV_ABC = summaryCVABC, TEST = summaryTEST, TESTABC=summaryTESTABC), 3)
+```
+
+
+
+
